@@ -94,6 +94,15 @@ bun fmt     # format
 
 A menu bar item showing the app's plush toy hugging a gauge, next to the highest utilization of the profile at the top of the list. The gauge's needle points at that utilization. The icon is the menu bar's usual colour while there's plenty left, then turns yellow at 60%, orange at 70% and red at 90%, the points where the menu's bars turn orange and red. A warning triangle replaces it when the config can't be read or that profile has no usage to show. Click it to see every profile's limits, reset times, extra usage, ChatGPT credits and limit resets, and errors. Drag a profile up or down to reorder them (moving one to the top changes what the menu bar shows); the app remembers the order, while the CLI keeps config file order. It refreshes every 5 minutes, and when opened if the data is more than a minute old. A `setup_token` profile is checked less often, as each check spends a little of the plan: at most every 10 minutes, or once a minute when you open the menu. Once its 5-hour session has ended it isn't checked again until you press refresh, even after a relaunch, so the app doesn't start a new session for you, and the menu says how old its values are. After an error it backs off and keeps showing the last values. After an expired token or a refused request, it waits for you to press refresh. The gear button opens the config in your default text editor, creating a starter file if there isn't one.
 
+The chart button opens Usage History: one graph of every profile's weekly limit (across all models) over the last 28 days, split into weeks. None of the APIs give past usage, so the app saves each profile's at every refresh, in `~/Library/Application Support/SubSmasher/history.json`, and the graph fills in from when you start running it. Grey dashes join readings more than an hour apart, such as while the Mac was asleep or a setup-token profile wasn't checked. Hover over the graph to read every profile's usage at that time. Untick a profile to hide its line, or click its colour to change it. The app remembers both.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/history-light.png">
+    <img src="docs/history.png" width="560" alt="The Usage History window, graphing four accounts' weekly usage over 28 days, with the readout for the time under the pointer">
+  </picture>
+</p>
+
 Needs macOS 14 or later and the Swift 6 toolchain that comes with Xcode.
 
 ### Build and install
@@ -116,4 +125,4 @@ SUBSMASHER_LIVE_TEST=1 swift test --filter live    # also hits the real API with
 ./scripts/screenshots.sh                           # re-renders the README's screenshots in docs/ from sample accounts
 ```
 
-Open `macos/Package.swift` in Xcode to work on it there. `SubSmasherCore` holds the config, credential and API code (Codex in `Codex.swift`, Grok in `Grok.swift`, setup tokens in `SetupToken.swift`), and `SubSmasher` holds the SwiftUI app. `Resources/AppIcon.png` is the app icon, which `build-app.sh` turns into the bundle's `.icns`.
+Open `macos/Package.swift` in Xcode to work on it there. `SubSmasherCore` holds the config, credential and API code (Codex in `Codex.swift`, Grok in `Grok.swift`, setup tokens in `SetupToken.swift`, usage history in `History.swift`), and `SubSmasher` holds the SwiftUI app. `Resources/AppIcon.png` is the app icon, which `build-app.sh` turns into the bundle's `.icns`.

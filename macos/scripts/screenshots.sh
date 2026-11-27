@@ -1,5 +1,6 @@
 #!/bin/sh
-# Renders the README's screenshots into docs/: the menu, and the output of `subsmash -a`, for sample accounts.
+# Renders the README's screenshots into docs/: the menu, the history window in dark and light, and the output of
+# `subsmash -a`, for sample accounts.
 set -eu
 
 cd "$(dirname "$0")/.."

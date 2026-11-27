@@ -10,12 +10,23 @@ final class UsageModel {
     private(set) var configError: String?
     private(set) var isRefreshing = false
     private(set) var lastUpdated: Date?
+    private(set) var history = UsageHistory()
+    /// Profiles left off the history chart, and their lines' colours there as "#RRGGBB". Kept in UserDefaults, like
+    /// the order.
+    private(set) var hiddenFromHistory: Set<String> = []
+    private(set) var historyColors: [String: String] = [:]
 
     var configURL: URL { ConfigFile.defaultURL }
 
     private static let refreshInterval: Duration = .seconds(300)
     private static let staleAfter: TimeInterval = 60
     private static let orderKey = "profileOrder"
+    private static let hiddenFromHistoryKey = "hiddenFromHistory"
+    private static let historyColorsKey = "historyColors"
+    /// Given out in turn to profiles without a colour. Mid-tones that read on light and dark backgrounds.
+    private static let historyPalette = [
+        "#0A84FF", "#FF9F0A", "#30D158", "#BF5AF2", "#FF375F", "#30B0C7", "#5E5CE6", "#AC8E68",
+    ]
     private static let configTemplate = """
         # SubSmasher profiles: one [section] per account.
         # Keys: name (optional label), and setup_token, claude_config_dir, oauth_token, codex_home or cursor_dir.
@@ -27,6 +38,10 @@ final class UsageModel {
 
     init() {
         Self.adoptAgentUsageDefaults()
+        let defaults = UserDefaults.standard
+        history = UsageHistory.load(from: UsageHistory.defaultURL)
+        hiddenFromHistory = Set(defaults.stringArray(forKey: Self.hiddenFromHistoryKey) ?? [])
+        historyColors = defaults.dictionary(forKey: Self.historyColorsKey) as? [String: String] ?? [:]
         Task { await refreshLoop() }
     }
 
@@ -44,9 +59,12 @@ final class UsageModel {
         defaults.removePersistentDomain(forName: agentUsage)
     }
 
-    /// Shows `reports` as just fetched, without reading the config or refreshing. For the README's screenshots.
-    init(reports: [ProfileReport]) {
+    /// Shows `reports` and `history` as just fetched, without reading the config or refreshing. For the README's
+    /// screenshots.
+    init(reports: [ProfileReport], history: UsageHistory = UsageHistory()) {
         self.reports = reports
+        self.history = history
+        historyColors = Self.assigningColors(to: reports.map(\.id), in: [:])
         lastUpdated = .now
     }
 
@@ -67,6 +85,7 @@ final class UsageModel {
             let fetched = await fetchReports(for: profiles, trigger: trigger)
             // Read the order after fetching so a drag made during the refresh isn't undone.
             reports = ordered(fetched, by: savedOrder)
+            record(fetched)
         } catch {
             configError = error.localizedDescription
             reports = []
@@ -88,6 +107,43 @@ final class UsageModel {
         reports = ordered(reports, by: newOrder)
         UserDefaults.standard.set(newOrder, forKey: Self.orderKey)
         return true
+    }
+
+    /// Adds the refresh to the history, and gives profiles new to the history chart a colour there.
+    private func record(_ fetched: [ProfileReport]) {
+        var updated = history
+        updated.record(fetched, at: .now)
+        if updated != history {
+            history = updated
+            try? history.save(to: UsageHistory.defaultURL)
+        }
+        let colors = Self.assigningColors(to: fetched.map(\.id), in: historyColors)
+        if colors != historyColors {
+            historyColors = colors
+            UserDefaults.standard.set(colors, forKey: Self.historyColorsKey)
+        }
+    }
+
+    /// `colors` plus one for each of `ids` without one: the first in the palette that none of them has, so a profile
+    /// keeps its colour when the profiles are reordered or one is added.
+    private static func assigningColors(to ids: [String], in colors: [String: String]) -> [String: String] {
+        var colors = colors
+        for id in ids where colors[id] == nil {
+            let used = Set(ids.compactMap { colors[$0] })
+            colors[id] =
+                historyPalette.first { !used.contains($0) } ?? historyPalette[used.count % historyPalette.count]
+        }
+        return colors
+    }
+
+    func setHistoryColor(_ hex: String, for id: String) {
+        historyColors[id] = hex
+        UserDefaults.standard.set(historyColors, forKey: Self.historyColorsKey)
+    }
+
+    func setShownInHistory(_ shown: Bool, for id: String) {
+        if shown { hiddenFromHistory.remove(id) } else { hiddenFromHistory.insert(id) }
+        UserDefaults.standard.set(hiddenFromHistory.sorted(), forKey: Self.hiddenFromHistoryKey)
     }
 
     func refreshIfStale() {

@@ -144,6 +144,12 @@ struct UsageMenuView: View {
             }
             Spacer()
             Button {
+                HistoryWindow.show(model: model)
+            } label: {
+                Image(systemName: "chart.xyaxis.line")
+            }
+            .help("Usage history")
+            Button {
                 Task { await model.refresh(.manual) }
             } label: {
                 Image(systemName: "arrow.clockwise")

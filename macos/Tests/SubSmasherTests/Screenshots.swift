@@ -5,8 +5,9 @@ import Testing
 @testable import SubSmasher
 @testable import SubSmasherCore
 
-/// Renders the README's screenshots into $SUBSMASHER_SCREENSHOTS: the menu for sample accounts, and the CLI's output
-/// for the same accounts from $SUBSMASHER_CLI_OUTPUT. Run `scripts/screenshots.sh` rather than this directly.
+/// Renders the README's screenshots into $SUBSMASHER_SCREENSHOTS: the menu and the history window for sample accounts,
+/// and the CLI's output for the same accounts from $SUBSMASHER_CLI_OUTPUT. Run `scripts/screenshots.sh` rather than
+/// this directly.
 @MainActor
 struct Screenshots {
     nonisolated static let directory = ProcessInfo.processInfo.environment["SUBSMASHER_SCREENSHOTS"]
@@ -18,6 +19,20 @@ struct Screenshots {
             .background(Color(red: 38 / 255, green: 42 / 255, blue: 46 / 255))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         try render(view, to: URL(fileURLWithPath: Self.directory!).appending(path: "menu.png"))
+    }
+
+    @Test(.enabled(if: directory != nil))
+    func history() throws {
+        let now = Date.now
+        let model = UsageModel(reports: Self.sampleReports(now: now), history: Self.sampleHistory(now: now))
+        // Just after ChatGPT's spike.
+        let view = HistoryView(model: model, pointer: now.addingTimeInterval(-10 * 24 * 3600 + 3 * 3600))
+            .frame(width: 640, height: 380)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        let directory = URL(fileURLWithPath: Self.directory!)
+        try render(view, to: directory.appending(path: "history.png"))
+        try render(view, to: directory.appending(path: "history-light.png"), appearance: .aqua)
     }
 
     @Test(.enabled(if: directory != nil && cliOutput != nil))
@@ -74,14 +89,62 @@ struct Screenshots {
         return reports.map { ProfileReport(id: $0.0, displayName: $0.0, result: .success($0.1)) }
     }
 
-    /// Draws `view` at 2x in dark mode, off screen.
-    func render(_ view: some View, to url: URL) throws {
-        let hosting = NSHostingView(rootView: view.environment(\.colorScheme, .dark))
-        hosting.appearance = NSAppearance(named: .darkAqua)
+    /// 28 days of bursty use, ending at the sample accounts' weekly usage and resetting on their reset days, with a
+    /// spike on ChatGPT, two days the Mac was off, and nights when Work, a setup-token account, wasn't checked.
+    static func sampleHistory(now: Date) -> UsageHistory {
+        let hour: TimeInterval = 3600
+        let day = 24 * hour
+        let step: TimeInterval = 15 * 60
+        let start = now.addingTimeInterval(-28 * day)
+        let off = now.addingTimeInterval(-18 * day)...now.addingTimeInterval(-16 * day)
+        let spike = now.addingTimeInterval(-10 * day)
+        let accounts: [(id: String, resetsIn: TimeInterval, weekly: Double, totals: [Double])] = [
+            ("me@example.com", day + 8 * hour, 82, [88, 97, 79, 93, 90]),
+            ("Work", 2 * day + 5 * hour, 91, [62, 85, 100, 70, 80]),
+            ("ChatGPT", 5 * day + 22 * hour, 64, [45, 52, 71, 40, 50]),
+            ("Grok", 2 * day + 18 * hour, 32, [30, 41, 26, 35, 30]),
+        ]
+        var seed: UInt64 = 42
+        func random() -> Double {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Double(seed >> 11) / Double(1 << 53)
+        }
+        var samples: [String: [UsageHistory.Sample]] = [:]
+        for account in accounts {
+            var weekStart = now.addingTimeInterval(account.resetsIn - 5 * 7 * day)
+            for total in account.totals where weekStart < now {
+                let weekEnd = min(weekStart.addingTimeInterval(7 * day), now)
+                let times = Array(stride(from: weekStart, to: weekEnd, by: step))
+                let weights = times.map { time -> Double in
+                    let isAwake = Calendar.current.component(.hour, from: time) >= 8
+                    let isSpike = account.id == "ChatGPT" && (spike..<spike.addingTimeInterval(hour)).contains(time)
+                    return (isAwake ? pow(random(), 3) : 0) + (isSpike ? 15 : 0)
+                }
+                let scale = (weekEnd < now ? total : account.weekly) / weights.reduce(0, +)
+                var used = 0.0
+                for (time, weight) in zip(times, weights) {
+                    used += weight
+                    let unchecked =
+                        account.id == "Work" && Calendar.current.component(.hour, from: time) < 8
+                        && Calendar.current.component(.day, from: time) % 3 == 0
+                    if time >= start, !off.contains(time), !unchecked {
+                        samples[account.id, default: []].append(.init(date: time, percent: used * scale))
+                    }
+                }
+                weekStart = weekStart.addingTimeInterval(7 * day)
+            }
+        }
+        return UsageHistory(samples: samples)
+    }
+
+    /// Draws `view` at 2x, in dark mode unless `appearance` says otherwise, off screen.
+    func render(_ view: some View, to url: URL, appearance: NSAppearance.Name = .darkAqua) throws {
+        let hosting = NSHostingView(rootView: view.environment(\.colorScheme, appearance == .aqua ? .light : .dark))
+        hosting.appearance = NSAppearance(named: appearance)
         let size = hosting.fittingSize
         hosting.frame = CGRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = NSAppearance(named: appearance)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.contentView = hosting
