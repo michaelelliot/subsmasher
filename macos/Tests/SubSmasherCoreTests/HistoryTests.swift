@@ -6,6 +6,7 @@ import Testing
 struct HistoryTests {
     static let start = Date(timeIntervalSince1970: 1_800_000_000)
     static let minute: TimeInterval = 60
+    static let hour = 60 * minute
 
     static func at(_ minutes: TimeInterval) -> Date {
         start.addingTimeInterval(minutes * minute)
@@ -30,8 +31,8 @@ struct HistoryTests {
         history.record(
             [Self.report("a", Self.usage(weekly: 10)), Self.report("b", Self.usage(weekly: 50))], at: Self.start)
         history.record([Self.report("a", Self.usage(weekly: 11))], at: Self.at(1))
-        history.record([Self.report("a", Self.usage(weekly: 12))], at: Self.at(5))
-        #expect(history.samples == ["a": Self.samples([(0, 10), (5, 12)]), "b": Self.samples([(0, 50)])])
+        history.record([Self.report("a", Self.usage(weekly: 31.892770105605198))], at: Self.at(5))
+        #expect(history.samples == ["a": Self.samples([(0, 10), (5, 31.9)]), "b": Self.samples([(0, 50)])])
     }
 
     @Test func recordsOnlyWeeklyUsageReadInThisRefresh() {
@@ -49,11 +50,11 @@ struct HistoryTests {
         #expect(history.samples.isEmpty)
     }
 
-    @Test func forgetsSamplesOlderThan28Days() {
+    @Test func forgetsSamplesOlderThanAYear() {
         var history = UsageHistory()
         history.record(
             [Self.report("a", Self.usage(weekly: 10)), Self.report("b", Self.usage(weekly: 20))], at: Self.start)
-        let later = 28 * 24 * 60 + 1.0
+        let later = 366 * 24 * 60 + 1.0
         history.record([Self.report("a", Self.usage(weekly: 30))], at: Self.at(later))
         #expect(history.samples == ["a": Self.samples([(later, 30)])])
     }
@@ -72,31 +73,64 @@ struct HistoryTests {
         #expect(Self.usage(weekly: nil).weeklyPercent == nil)
     }
 
-    @Test func linesJoinNearbySamplesThinnedAndMarkTheGapsBetween() {
+    @Test func thinsSamplesMoreThanAWeekOldToOneAnHourKeepingEveryGap() {
+        let samples = Self.samples([(0, 1), (20, 2), (40, 3), (55, 4), (70, 5), (90, 6), (250, 7), (260, 8), (300, 9)])
+            + Self.samples([(400, 10), (405, 11)])
+        let thinned = UsageHistory.thinned(samples, before: Self.at(350))
+        #expect(thinned == Self.samples([(0, 1), (55, 4), (90, 6), (250, 7), (300, 9), (400, 10), (405, 11)]))
+        #expect(UsageHistory.thinned(thinned, before: Self.at(350)) == thinned)
+        // The peak before a reset is kept.
+        let reset = Self.samples([(0, 50), (20, 60), (40, 70), (50, 5), (70, 10), (400, 20)])
+        #expect(
+            UsageHistory.thinned(reset, before: Self.at(350)) == Self.samples([(0, 50), (40, 70), (70, 10), (400, 20)]))
+    }
+
+    @Test func linesKeepEachStretchsPeaksAndMarkTheGapsBetween() {
         let history = UsageHistory(samples: [
-            "a": Self.samples([(0, 1), (5, 2), (10, 3), (15, 4), (20, 5), (120, 6), (125, 7), (300, 8)])
+            "a": Self.samples([(0, 1), (5, 2), (10, 3), (15, 4), (20, 5), (120, 6), (125, 7), (300, 8)]),
+            "b": Self.samples([(0, 50), (5, 80), (10, 0), (15, 5)]),
         ])
-        #expect(history.lines(for: "a", since: Self.start, resolution: 10 * Self.minute) == [
-            UsageHistory.Line(samples: Self.samples([(0, 1), (10, 3), (20, 5)]), isGap: false),
+        let hour = Self.hour
+        #expect(history.lines(for: "a", since: Self.start, resolution: 10 * Self.minute, gap: hour) == [
+            UsageHistory.Line(samples: Self.samples([(0, 1), (5, 2), (15, 4), (20, 5)]), isGap: false),
             UsageHistory.Line(samples: Self.samples([(20, 5), (120, 6)]), isGap: true),
             UsageHistory.Line(samples: Self.samples([(120, 6), (125, 7)]), isGap: false),
             UsageHistory.Line(samples: Self.samples([(125, 7), (300, 8)]), isGap: true),
             UsageHistory.Line(samples: Self.samples([(300, 8)]), isGap: false),
         ])
-        #expect(history.lines(for: "a", since: Self.at(200), resolution: 0) == [
+        // The peak before a reset survives thinning.
+        #expect(history.lines(for: "b", since: Self.start, resolution: 20 * Self.minute, gap: hour) == [
+            UsageHistory.Line(samples: Self.samples([(0, 50), (5, 80), (15, 5)]), isGap: false)
+        ])
+        // Longer charts allow longer gaps.
+        #expect(history.lines(for: "a", since: Self.start, resolution: 1, gap: 200 * Self.minute) == [
+            UsageHistory.Line(samples: history.samples["a"]!, isGap: false)
+        ])
+        #expect(history.lines(for: "a", since: Self.at(200), resolution: 1, gap: hour) == [
             UsageHistory.Line(samples: Self.samples([(300, 8)]), isGap: false)
         ])
-        #expect(history.lines(for: "b", since: Self.start, resolution: 0).isEmpty)
+        #expect(history.lines(for: "c", since: Self.start, resolution: 1, gap: hour).isEmpty)
     }
 
-    @Test func usageAtATimeIsTheNearestSampleWithinHalfTheLongestGap() {
+    @Test func usageAtATimeIsTheNearerSampleOnALineOrOneWithinTolerance() {
         let history = UsageHistory(samples: ["a": Self.samples([(0, 10), (50, 20), (200, 30)])])
-        #expect(history.percent(for: "a", at: Self.at(20)) == 10)
-        #expect(history.percent(for: "a", at: Self.at(30)) == 20)
-        #expect(history.percent(for: "a", at: Self.at(125)) == nil)
-        #expect(history.percent(for: "a", at: Self.at(175)) == 30)
-        #expect(history.percent(for: "a", at: Self.at(-31)) == nil)
-        #expect(history.percent(for: "b", at: Self.start) == nil)
+        func percent(at minutes: TimeInterval, gap: TimeInterval = Self.hour) -> Double? {
+            history.percent(for: "a", at: Self.at(minutes), gap: gap, tolerance: 5 * Self.minute)
+        }
+        #expect(percent(at: 20) == 10)
+        #expect(percent(at: 30) == 20)
+        // In the gap from 50 to 200, except next to either end.
+        #expect(percent(at: 120) == nil)
+        #expect(percent(at: 175) == nil)
+        #expect(percent(at: 54) == 20)
+        #expect(percent(at: 197) == 30)
+        #expect(percent(at: 120, gap: 160 * Self.minute) == 20)
+        // Before the first sample and after the last.
+        #expect(percent(at: -31) == nil)
+        #expect(percent(at: -3) == 10)
+        #expect(percent(at: 205) == 30)
+        #expect(percent(at: 206) == nil)
+        #expect(history.percent(for: "b", at: Self.start, gap: Self.hour, tolerance: Self.hour) == nil)
     }
 
     @Test func savesAndLoads() throws {

@@ -25,9 +25,14 @@ struct Screenshots {
     func history() throws {
         let now = Date.now
         let model = UsageModel(reports: Self.sampleReports(now: now), history: Self.sampleHistory(now: now))
-        // Just after ChatGPT's spike.
+        // The 30-day range, with the readout just after ChatGPT's spike.
+        let suite = "SubSmasherScreenshots"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(HistoryRange.month.rawValue, forKey: HistoryView.rangeKey)
         let view = HistoryView(model: model, pointer: now.addingTimeInterval(-10 * 24 * 3600 + 3 * 3600))
-            .frame(width: 640, height: 380)
+            .defaultAppStorage(defaults)
+            .frame(width: 640, height: 420)
             .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         let directory = URL(fileURLWithPath: Self.directory!)
@@ -89,20 +94,20 @@ struct Screenshots {
         return reports.map { ProfileReport(id: $0.0, displayName: $0.0, result: .success($0.1)) }
     }
 
-    /// 28 days of bursty use, ending at the sample accounts' weekly usage and resetting on their reset days, with a
+    /// 30 days of bursty use, ending at the sample accounts' weekly usage and resetting on their reset days, with a
     /// spike on ChatGPT, two days the Mac was off, and nights when Work, a setup-token account, wasn't checked.
     static func sampleHistory(now: Date) -> UsageHistory {
         let hour: TimeInterval = 3600
         let day = 24 * hour
         let step: TimeInterval = 15 * 60
-        let start = now.addingTimeInterval(-28 * day)
+        let start = now.addingTimeInterval(-30 * day)
         let off = now.addingTimeInterval(-18 * day)...now.addingTimeInterval(-16 * day)
         let spike = now.addingTimeInterval(-10 * day)
         let accounts: [(id: String, resetsIn: TimeInterval, weekly: Double, totals: [Double])] = [
-            ("me@example.com", day + 8 * hour, 82, [88, 97, 79, 93, 90]),
-            ("Work", 2 * day + 5 * hour, 91, [62, 85, 100, 70, 80]),
-            ("ChatGPT", 5 * day + 22 * hour, 64, [45, 52, 71, 40, 50]),
-            ("Grok", 2 * day + 18 * hour, 32, [30, 41, 26, 35, 30]),
+            ("me@example.com", day + 8 * hour, 82, [84, 88, 97, 79, 93, 90]),
+            ("Work", 2 * day + 5 * hour, 91, [75, 62, 85, 100, 70, 80]),
+            ("ChatGPT", 5 * day + 22 * hour, 64, [38, 45, 52, 71, 40, 50]),
+            ("Grok", 2 * day + 18 * hour, 32, [22, 30, 41, 26, 35, 30]),
         ]
         var seed: UInt64 = 42
         func random() -> Double {
@@ -111,7 +116,7 @@ struct Screenshots {
         }
         var samples: [String: [UsageHistory.Sample]] = [:]
         for account in accounts {
-            var weekStart = now.addingTimeInterval(account.resetsIn - 5 * 7 * day)
+            var weekStart = now.addingTimeInterval(account.resetsIn - 6 * 7 * day)
             for total in account.totals where weekStart < now {
                 let weekEnd = min(weekStart.addingTimeInterval(7 * day), now)
                 let times = Array(stride(from: weekStart, to: weekEnd, by: step))

@@ -3,32 +3,43 @@ import Charts
 import SubSmasherCore
 import SwiftUI
 
-/// The last 28 days of every profile's weekly usage on one chart, in a window opened from the menu.
+/// Every profile's weekly usage over the chosen range on one chart, in a window opened from the menu.
 struct HistoryView: View {
     let model: UsageModel
     /// A time to show the readout at whenever the pointer isn't over the plot, for the README's screenshots.
     var pointer: Date? = nil
+    @AppStorage(HistoryView.rangeKey) private var range = HistoryRange.week
 
-    /// About a point per pixel at the window's usual width.
-    private static let resolution: TimeInterval = 60 * 60
+    static let rangeKey = "historyRange"
 
     var body: some View {
         let now = Date.now
-        let start = now.addingTimeInterval(-UsageHistory.period)
+        let start = now.addingTimeInterval(-range.span)
         let accounts = model.reports.map { report in
             ChartAccount(
                 id: report.id, name: report.displayName,
                 color: Color(hex: model.historyColors[report.id]) ?? .accentColor,
-                lines: model.history.lines(for: report.id, since: start, resolution: Self.resolution))
+                // About a point per pixel at the window's usual width.
+                lines: model.history.lines(
+                    for: report.id, since: start, resolution: range.span / 500, gap: range.gap.seconds))
         }
         VStack(alignment: .leading, spacing: 12) {
+            Picker("Range", selection: $range) {
+                ForEach(HistoryRange.allCases) { range in
+                    Text(range.rawValue).tag(range).help(range.title)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .frame(maxWidth: .infinity)
             HistoryChart(
                 accounts: accounts.filter { !model.hiddenFromHistory.contains($0.id) }, history: model.history,
-                start: start, now: now, pointer: pointer
+                range: range, start: start, now: now, pointer: pointer
             )
             .overlay {
                 if accounts.allSatisfy(\.lines.isEmpty) {
-                    Text("No usage recorded yet")
+                    Text("No usage recorded in this period")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -42,7 +53,7 @@ struct HistoryView: View {
             }
             Text(
                 "Each account's weekly limit across all models, saved at every refresh. Grey dashes join readings "
-                    + "more than an hour apart, where there's no data."
+                    + "more than \(range.gap.text) apart, where there's no data."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -75,10 +86,64 @@ struct HistoryView: View {
             .toggleStyle(.checkbox)
             .lineLimit(1)
             .truncationMode(.middle)
-            .help(account.lines.isEmpty ? "No usage recorded in the last 28 days" : account.name)
-            .accessibilityHint(account.lines.isEmpty ? "No usage recorded in the last 28 days" : "")
+            .help(account.lines.isEmpty ? "No usage recorded in this period" : account.name)
+            .accessibilityHint(account.lines.isEmpty ? "No usage recorded in this period" : "")
         }
         .foregroundStyle(account.lines.isEmpty ? .secondary : .primary)
+    }
+}
+
+/// How far back the chart goes.
+enum HistoryRange: String, CaseIterable, Identifiable {
+    case day = "1d", threeDays = "3d", week = "7d", month = "30d", threeMonths = "3m", sixMonths = "6m", year = "1y"
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .day: "1 day"
+        case .threeDays: "3 days"
+        case .week: "7 days"
+        case .month: "30 days"
+        case .threeMonths: "3 months"
+        case .sixMonths: "6 months"
+        case .year: "1 year"
+        }
+    }
+
+    var span: TimeInterval {
+        let days: Double =
+            switch self {
+            case .day: 1
+            case .threeDays: 3
+            case .week: 7
+            case .month: 30
+            case .threeMonths: 91
+            case .sixMonths: 182
+            case .year: 365
+            }
+        return days * 24 * 60 * 60
+    }
+
+    /// Readings further apart than this are joined by grey dashes: an hour, or longer on charts where shorter gaps
+    /// wouldn't show, and would break the lines every night the Mac sleeps.
+    var gap: (seconds: TimeInterval, text: String) {
+        switch self {
+        case .day, .threeDays, .week, .month: (UsageHistory.hour, "an hour")
+        case .threeMonths, .sixMonths: (12 * UsageHistory.hour, "12 hours")
+        case .year: (24 * UsageHistory.hour, "a day")
+        }
+    }
+
+    /// Gridlines at the start of every `unit` whose number is a multiple of `count`: midnight, 6 am, noon and 6 pm, or
+    /// every day, week or month.
+    var grid: (unit: Calendar.Component, count: Int, label: Date.FormatStyle) {
+        switch self {
+        case .day: (.hour, 6, .dateTime.hour())
+        case .threeDays, .week: (.day, 1, .dateTime.weekday(.abbreviated).day())
+        case .month: (.weekOfYear, 1, .dateTime.day().month(.abbreviated))
+        case .threeMonths, .sixMonths, .year: (.month, 1, .dateTime.month(.abbreviated))
+        }
     }
 }
 
@@ -93,6 +158,7 @@ private struct ChartAccount: Identifiable {
 private struct HistoryChart: View {
     let accounts: [ChartAccount]
     let history: UsageHistory
+    let range: HistoryRange
     let start: Date
     let now: Date
     let pointer: Date?
@@ -129,11 +195,12 @@ private struct HistoryChart: View {
         .chartXScale(domain: start...now)
         .chartYScale(domain: 0...max(100, peak))
         .chartXAxis {
-            AxisMarks(values: weekMarks) { _ in
+            AxisMarks(values: marks) { _ in
                 // Solid, so they aren't taken for the grey dashes across gaps.
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                 AxisTick()
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                // Drops a label that doesn't fit, as at the ends, rather than cutting it short.
+                AxisValueLabel(format: range.grid.label, collisionResolution: .greedy)
             }
         }
         .chartYAxis {
@@ -145,15 +212,20 @@ private struct HistoryChart: View {
             }
         }
         .chartOverlay { proxy in
-            HoverReadout(proxy: proxy, accounts: accounts, history: history, pointer: pointer)
+            HoverReadout(proxy: proxy, accounts: accounts, history: history, range: range, pointer: pointer)
         }
         .frame(minHeight: 180)
     }
 
-    /// Midnight 7, 14 and 21 days before today's, splitting the 28 days into weeks.
-    private var weekMarks: [Date] {
-        let today = Calendar.current.startOfDay(for: now)
-        return [21, 14, 7].compactMap { Calendar.current.date(byAdding: .day, value: -$0, to: today) }
+    /// Stepping one unit at a time and checking the number on the clock keeps the 6-hourly lines on the hour across a
+    /// daylight saving change.
+    private var marks: [Date] {
+        let calendar = Calendar.current
+        let grid = range.grid
+        guard let first = calendar.dateInterval(of: grid.unit, for: start)?.end else { return [] }
+        return sequence(first: first) { calendar.date(byAdding: grid.unit, value: 1, to: $0) }
+            .prefix { $0 < now }
+            .filter { calendar.component(grid.unit, from: $0) % grid.count == 0 }
     }
 }
 
@@ -163,6 +235,7 @@ private struct HoverReadout: View {
     let proxy: ChartProxy
     let accounts: [ChartAccount]
     let history: UsageHistory
+    let range: HistoryRange
     let pointer: Date?
     @State private var location: CGPoint?
 
@@ -214,7 +287,9 @@ private struct HoverReadout: View {
                 .foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 2) {
                 ForEach(accounts) { account in
-                    let percent = history.percent(for: account.id, at: date)
+                    // About 3 points either side of a reading at the window's usual width.
+                    let percent = history.percent(
+                        for: account.id, at: date, gap: range.gap.seconds, tolerance: range.span / 200)
                     GridRow {
                         Circle().fill(account.color).frame(width: 7, height: 7)
                         Text(account.name)
@@ -255,7 +330,7 @@ enum HistoryWindow {
         let window = NSWindow(contentViewController: controller)
         window.title = "Usage History"
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 640, height: 380))
+        window.setContentSize(NSSize(width: 640, height: 420))
         window.center()
         window.setFrameAutosaveName("UsageHistory")
         return window
